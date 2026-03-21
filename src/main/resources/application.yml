@@ -1,0 +1,43 @@
+spring:
+  # ── PostgreSQL + JPA ───────────────────────────────────────
+  datasource:
+    url: jdbc:postgresql://localhost:5432/lab05db
+    username: postgres
+    password: postgres
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+  # ── MongoDB ────────────────────────────────────────────────
+  data:
+    mongodb:
+      uri: mongodb://root:rootpass@localhost:27017/lab05mongo?authSource=admin
+
+    # ── Redis ──────────────────────────────────────────────────
+    redis:
+      host: localhost
+      port: 6379
+      password: redispass
+
+  # ── Cassandra ──────────────────────────────────────────────
+  cassandra:
+    contact-points: localhost
+    port: 9042
+    local-datacenter: datacenter1
+    keyspace-name: lab05ks
+    schema-action: create-if-not-exists
+
+  # ── Neo4j ──────────────────────────────────────────────────
+  neo4j:
+    uri: bolt://localhost:7687
+    authentication:
+      username: neo4j
+      password: neo4jpass
+
+  # ── Elasticsearch ──────────────────────────────────────────
+  elasticsearch:
+    uris: http://localhost:9200

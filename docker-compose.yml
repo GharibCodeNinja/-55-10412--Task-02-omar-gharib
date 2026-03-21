@@ -1,0 +1,156 @@
+services:
+
+  # ── PostgreSQL ───────────────────────────────────────────────
+  postgres:
+    image: postgres:latest
+    container_name: lab05-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: lab05db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pg-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d lab05db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── MongoDB ──────────────────────────────────────────────────
+  mongo:
+    image: mongo:latest
+    container_name: lab05-mongo
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: rootpass
+      MONGO_INITDB_DATABASE: lab05mongo
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Mongo Express (GUI for MongoDB) ──────────────────────────
+  mongo-express:
+    image: mongo-express:latest
+    container_name: lab05-mongo-express
+    ports:
+      - "8081:8081"
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: root
+      ME_CONFIG_MONGODB_ADMINPASSWORD: rootpass
+      ME_CONFIG_MONGODB_URL: mongodb://root:rootpass@mongo:27017/
+      ME_CONFIG_BASICAUTH: "false"
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  # ── Redis ────────────────────────────────────────────────────
+  redis:
+    image: redis:latest
+    container_name: lab05-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass redispass --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redispass", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis Insight (GUI for Redis) ──────────────────────────
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: lab05-redisinsight
+    ports:
+      - "5540:5540"
+    depends_on:
+      - redis
+
+  # ── Cassandra ────────────────────────────────────────────────
+  cassandra:
+    image: cassandra:latest
+    container_name: lab05-cassandra
+    ports:
+      - "9042:9042"
+    environment:
+      CASSANDRA_CLUSTER_NAME: lab05cluster
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_KEYSPACE: lab05ks
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    command: >
+      bash -c "
+        docker-entrypoint.sh cassandra -f &
+        until cqlsh -e 'DESCRIBE KEYSPACES' 2>/dev/null; do sleep 5; done;
+        cqlsh -e \"CREATE KEYSPACE IF NOT EXISTS $${CASSANDRA_KEYSPACE} WITH replication = {'class':'SimpleStrategy','replication_factor':1};\";
+        wait
+      "
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES'"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # ── Neo4j ────────────────────────────────────────────────────
+  neo4j:
+    image: neo4j:latest
+    container_name: lab05-neo4j
+    ports:
+      - "7474:7474"   # Browser UI
+      - "7687:7687"   # Bolt protocol
+    environment:
+      NEO4J_AUTH: neo4j/neo4jpass
+    volumes:
+      - neo4j-data:/data
+    healthcheck:
+      test: ["CMD", "neo4j", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ── Elasticsearch ────────────────────────────────────────────
+  elasticsearch:
+    image: elasticsearch:8.19.12
+    container_name: lab05-elasticsearch
+    ports:
+      - "9200:9200"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ── Kibana (GUI for Elasticsearch) ───────────────────────────
+  kibana:
+    image: kibana:8.19.12
+    container_name: lab05-kibana
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+volumes:
+  pg-data:
+  mongo-data:
+  cassandra-data:
+  neo4j-data:
+  es-data:

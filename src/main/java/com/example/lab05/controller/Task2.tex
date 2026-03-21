@@ -1,0 +1,399 @@
+\documentclass[a4paper]{article}
+\usepackage{enumerate}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\input{../../uebungsblatt.sty}
+\input{../../csen.sty}
+\renewcommand{\documenttype}{Task 2}
+\input{../../Config.tex}
+
+\begin{document}
+
+\header{2}{Polyglot Persistence --- 6 Databases, One Application}
+In this individual task, you will build a \textbf{Smart E-Commerce Backend} that orchestrates six databases in a single Spring Boot application. You will implement two grand integration features: a \textbf{Purchase Flow} that writes to all six databases in one transaction, and a \textbf{Personalized Dashboard} that assembles data from all six databases into one response with Redis caching and graceful degradation. The task builds directly on the Lab~5 solution and challenges you to apply polyglot persistence in a realistic scenario.
+
+The six databases and their roles:
+\begin{center}
+\begin{tabular}{l l l}
+\textbf{Database} & \textbf{Role in This Task} & \textbf{Why This DB} \\ \hline
+PostgreSQL & Product stock and pricing & ACID --- source of truth \\
+MongoDB & Purchase receipts (flexible) & Varying metadata per order \\
+Redis & Cache dashboard + evict stale data & Sub-ms response \\
+Cassandra & Activity event log & Append-only time-series \\
+Neo4j & Social graph + purchase edges & Friend recommendations \\
+Elasticsearch & You might also like search & Fuzzy text similarity \\
+\end{tabular}
+\end{center}
+
+\section{Project Setup and Seeding}
+
+\subsection*{Clone the Starter Project}
+\begin{enumerate}
+  \item Clone the starter repository (this is the Lab~5 solution with the seeder added): \url{https://github.com/Scalable-2026/Task02-Base-Code.git}
+  \item Open a terminal in the project root directory and start all databases:
+    \begin{lstlisting}
+docker compose up -d
+    \end{lstlisting}
+    Wait until all containers are healthy (Cassandra takes 30--60 seconds).
+  \item Open the project in IntelliJ IDEA and set the SDK to \textbf{JDK 25}.
+  \item \textbf{Run the seeder} to populate all six databases with test data. Start the application normally and hit:
+    \begin{lstlisting}
+GET http://localhost:8080/api/seed
+    \end{lstlisting}
+    You should receive a JSON response like:
+    \begin{verbatim}
+{
+  "postgresql": "15 products inserted",
+  "mongodb": "15 products inserted",
+  "neo4j": "6 persons, 5 products, 8 FOLLOWS edges, 9 PURCHASED edges",
+  "cassandra": "60 activity events inserted",
+  "elasticsearch": "15 products indexed",
+  "status": "SUCCESS",
+  "message": "All 6 databases seeded successfully."
+}
+    \end{verbatim}
+    The seeder is idempotent --- if you hit \texttt{/api/seed} again, it returns \texttt{"status": "SKIPPED"} because data already exists.
+  \item Verify the data by testing a few existing endpoints:
+    \begin{lstlisting}
+GET http://localhost:8080/api/products
+GET http://localhost:8080/api/mongo/products
+GET /api/graph/persons/Alice/recommendations?limit=5
+    \end{lstlisting}
+\end{enumerate}
+
+\subsection*{Initialise Git and Push to GitHub}
+\begin{enumerate}
+  \item Delete the \texttt{.git} folder that came with the clone so you start with a clean history.
+  \item Initialise a new Git repository inside the project folder.
+  \item Stage all files and commit with the message:
+    \begin{verbatim}
+Initial commit: project setup with seeded data
+    \end{verbatim}
+    The seeder is idempotent --- if you hit \texttt{/api/seed} again, it returns \texttt{"status": "SKIPPED"} because data already exists.
+  \item Create a new \textbf{empty} repository on GitHub (no README, no license, no \texttt{.gitignore}) to be named as \textit{\textbf{ID-Task-02-FirstName-LastName}} (e.g: 55-8078-Task-02-Mohamed-Ayman).
+  \item \textit{\textbf{Make sure that your repo is a private one and not public}}.
+  \item Link your local repository to the remote, rename the default branch to \texttt{main}, and push.
+\end{enumerate}
+
+\section{Purchase Flow --- \texttt{feat/purchase} Branch}
+
+\noindent When a user purchases a product, the system must update \textbf{all six databases} in a single orchestrated flow.
+
+\subsection*{Create the Branch}
+\begin{enumerate}
+  \item From \texttt{main}, create and switch to a new branch named \texttt{feat/purchase}.
+\end{enumerate}
+
+\subsection*{PurchaseRequest DTO}
+\begin{enumerate}
+  \item In the \texttt{dto} package, create a class \texttt{PurchaseRequest} with:
+    \begin{enumerate}
+      \item \texttt{personName} : \texttt{String} --- the Neo4j person making the purchase
+      \item \texttt{productId} : \texttt{Long} --- the PostgreSQL product ID
+      \item \texttt{quantity} : \texttt{Integer}
+      \item \texttt{purchaseDetails} : \texttt{Map<String, Object>} --- flexible metadata (e.g.\ \texttt{paymentMethod}, \texttt{shippingAddress}, \texttt{giftWrap}, \texttt{notes}). Different purchases can have completely different fields here --- this is why we store it in MongoDB, not PostgreSQL.
+    \end{enumerate}
+  \item Provide getters, setters, and constructors.
+\end{enumerate}
+
+\subsection*{PurchaseReceipt --- MongoDB Document}
+\begin{enumerate}
+  \item In the \texttt{model.mongo} package, create a class \texttt{PurchaseReceipt} annotated with \texttt{@Document(collection = "purchase\_receipts")}:
+    \begin{enumerate}
+      \item \texttt{id} : \texttt{String} --- MongoDB auto-generates.
+      \item \texttt{personName} : \texttt{String}
+      \item \texttt{productName} : \texttt{String}
+      \item \texttt{productCategory} : \texttt{String}
+      \item \texttt{quantity} : \texttt{Integer}
+      \item \texttt{unitPrice} : \texttt{Double}
+      \item \texttt{totalPrice} : \texttt{Double} --- calculated as \texttt{unitPrice * quantity}
+      \item \texttt{purchaseDetails} : \texttt{Map<String, Object>} --- flexible metadata from the request
+      \item \texttt{purchasedAt} : \texttt{LocalDateTime} --- set to \texttt{LocalDateTime.now()} in the constructor
+    \end{enumerate}
+  \item Provide getters, setters, and constructors.
+\end{enumerate}
+
+\subsection*{PurchaseReceiptRepository}
+\begin{enumerate}
+  \item Create \texttt{PurchaseReceiptRepository} extending \texttt{MongoRepository<PurchaseReceipt, String>} with:
+    \begin{enumerate}
+      \item \texttt{List<PurchaseReceipt> findByPersonName(String personName)}
+      \item \texttt{List<PurchaseReceipt> findByProductCategory(String category)}
+    \end{enumerate}
+\end{enumerate}
+
+\subsection*{PurchaseService --- Orchestrating All 6 Databases}
+\begin{enumerate}
+  \item Create \texttt{PurchaseService} using \texttt{@Service}. Inject the following via constructor injection: \texttt{ProductService} (PostgreSQL), \texttt{PurchaseReceiptRepository} (MongoDB), \texttt{SocialGraphService} (Neo4j), \texttt{SensorService} (Cassandra), \texttt{ProductSearchService} (Elasticsearch), \texttt{RedisTemplate<String, Object>} (Redis).
+  \item Implement \texttt{PurchaseReceipt executePurchase(PurchaseRequest request)} with the following steps:
+
+    \textbf{Step 1 --- PostgreSQL (HARD dependency):} Look up the product by \texttt{productId}. Validate that \texttt{stockQuantity >= requested quantity} --- throw \texttt{400} if insufficient stock. Deduct the stock and save the updated product.
+
+    \textbf{Step 2 --- MongoDB (HARD dependency):} Create a \texttt{PurchaseReceipt} with product name, category, price, quantity, total, and the flexible \texttt{purchaseDetails} map. Save it.
+
+    \textbf{Step 3 --- Neo4j (try-catch):} Call \texttt{socialGraphService.purchase(personName, productName, quantity, price)} to create a \texttt{PURCHASED} edge in the graph.
+
+    \textbf{Step 4 --- Cassandra (try-catch):} Log a PURCHASE event using \texttt{SensorService.recordReading()}. Use \texttt{"purchase-" + personName} as the sensor ID and the product name in the location field.
+
+    \textbf{Step 5 --- Elasticsearch (try-catch):} If the product's stock is now 0, re-index it with \texttt{inStock = false}.
+
+    \textbf{Step 6 --- Redis:} Evict any cached dashboard for this person using \texttt{redisTemplate.delete("dashboard:" + personName)}.
+
+  \item Return the saved \texttt{PurchaseReceipt}.
+\end{enumerate}
+
+\subsection*{PurchaseController}
+\begin{enumerate}
+  \item Create \texttt{PurchaseController} with entry point \textit{\textbf{"/api/purchases"}} and implement:
+    \begin{enumerate}
+      \item \texttt{POST /api/purchases} --- accepts a \texttt{PurchaseRequest}, returns the \texttt{PurchaseReceipt}.
+      \item \texttt{GET /api/purchases/person/\{personName\}} --- returns all receipts for a person.
+    \end{enumerate}
+\end{enumerate}
+
+\subsection*{Update \texttt{application.properties}}
+\begin{enumerate}
+  \item Add the following line to \texttt{application.properties}:
+    \begin{verbatim}
+app.description=Smart E-Commerce Purchase API
+    \end{verbatim}
+    The seeder is idempotent --- if you hit \texttt{/api/seed} again, it returns \texttt{"status": "SKIPPED"} because data already exists.
+\end{enumerate}
+
+\subsection*{Test the Purchase Flow}
+\begin{enumerate}
+  \item Test with a purchase:
+    \begin{lstlisting}
+POST http://localhost:8080/api/purchases
+{
+  "personName": "Alice",
+  "productId": 1,
+  "quantity": 2,
+  "purchaseDetails": {
+    "paymentMethod": "VISA ending 4242",
+    "shippingAddress": "123 Main St, Cairo",
+    "giftWrap": true,
+    "couponCode": "SAVE10"
+  }
+}
+  \item Verify all six databases were updated:
+    \begin{lstlisting}
+GET /api/products/1
+GET /api/purchases/person/Alice
+GET /api/graph/persons/Bob/recommendations?limit=5
+GET /api/sensors/purchase-alice/readings
+GET /api/search/products/category/ELECTRONICS
+    \end{lstlisting}
+\end{enumerate}
+
+\subsection*{Commit and Push}
+\begin{enumerate}
+  \item Stage all changes and commit with the message:
+    \begin{verbatim}
+feat: add purchase flow across all 6 databases
+    \end{verbatim}
+    The seeder is idempotent --- if you hit \texttt{/api/seed} again, it returns \texttt{"status": "SKIPPED"} because data already exists.
+  \item Push \texttt{feat/purchase} to GitHub.
+\end{enumerate}
+
+\section{Personalized Dashboard --- \texttt{feat/dashboard} Branch}
+
+\subsection*{Update \texttt{main}}
+\begin{enumerate}
+  \item Switch back to \texttt{main}.
+  \item Edit \texttt{application.properties} and add:
+    \begin{verbatim}
+app.version=1.0.0
+app.description=Smart E-Commerce Platform
+    \end{verbatim}
+    The seeder is idempotent --- if you hit \texttt{/api/seed} again, it returns \texttt{"status": "SKIPPED"} because data already exists.
+  \item Commit and push with the message:
+    \begin{verbatim}
+config: set app version and description on main
+    \end{verbatim}
+    The seeder is idempotent --- if you hit \texttt{/api/seed} again, it returns \texttt{"status": "SKIPPED"} because data already exists.
+\end{enumerate}
+
+\subsection*{Create the Branch}
+\begin{enumerate}
+  \item From the updated \texttt{main}, create and switch to \texttt{feat/dashboard}.
+\end{enumerate}
+
+\subsection*{DashboardResponse DTO}
+\begin{enumerate}
+  \item In the \texttt{dto} package, create \texttt{DashboardResponse} (implement \texttt{Serializable} for Redis caching) with:
+    \begin{enumerate}
+      \item \texttt{personName} : \texttt{String}
+      \item \texttt{totalSpent} : \texttt{Double} --- sum of all receipt totals (MongoDB)
+      \item \texttt{purchaseCount} : \texttt{Integer} --- number of receipts (MongoDB)
+      \item \texttt{recentPurchases} : \texttt{List<PurchaseReceipt>} --- last 5 receipts (MongoDB)
+      \item \texttt{friendRecommendations} : \texttt{List<Map<String, Object>{}>} --- products friends bought (Neo4j)
+      \item \texttt{friendsOfFriends} : \texttt{List<String>} --- 2nd-degree connections (Neo4j)
+      \item \texttt{recentActivity} : \texttt{List<SensorReading>} --- last 10 events (Cassandra)
+      \item \texttt{youMightAlsoLike} : \texttt{List<String>} --- search suggestions (Elasticsearch)
+      \item \texttt{servedFromCache} : \texttt{boolean} (Redis)
+    \end{enumerate}
+\end{enumerate}
+
+\subsection*{DashboardService --- Reading All 6 Databases}
+\begin{enumerate}
+  \item Create \texttt{DashboardService} using \texttt{@Service}. Inject: \texttt{PurchaseReceiptRepository} (MongoDB), \texttt{SocialGraphService} (Neo4j), \texttt{SensorService} (Cassandra), \texttt{ProductSearchService} (Elasticsearch), \texttt{RedisTemplate<String, Object>} (Redis).
+  \item Implement \texttt{DashboardResponse getDashboard(String personName)}:
+
+    \textbf{Step 0 --- Redis (check cache):} Build cache key \texttt{"dashboard:" + personName}. If cached, set \texttt{servedFromCache = true} and return immediately.
+
+    \textbf{Step 1 --- MongoDB:} Fetch all receipts for this person. Calculate \texttt{totalSpent} and \texttt{purchaseCount}. Take last 5 as \texttt{recentPurchases}.
+
+    \textbf{Step 2 --- Neo4j (try-catch):} Get friend recommendations and friends-of-friends.
+
+    \textbf{Step 3 --- Cassandra (try-catch):} Fetch latest 10 events for \texttt{"user-activity-" + personName.toLowerCase()}.
+
+    \textbf{Step 4 --- Elasticsearch (try-catch):} For each purchased product name from Step~1, call \texttt{searchByName()} and collect top results as suggestions.
+
+    \textbf{Step 5 --- Redis (save to cache):} Save dashboard with TTL of 5 minutes. Set \texttt{servedFromCache = false}.
+\end{enumerate}
+
+\subsection*{DashboardController}
+\begin{enumerate}
+  \item Create \texttt{DashboardController} with entry point \textit{\textbf{"/api/dashboard"}} and implement:
+    \begin{enumerate}
+      \item \texttt{GET /api/dashboard/\{personName\}} --- returns the personalized dashboard.
+    \end{enumerate}
+\end{enumerate}
+
+\subsection*{Test the Dashboard}
+\begin{enumerate}
+  \item Make a few purchases first, then fetch Alice's dashboard:
+    \begin{lstlisting}
+GET http://localhost:8080/api/dashboard/Alice
+  \item Verify \texttt{servedFromCache: false} on first call, \texttt{true} on second call.
+  \item Make another purchase for Alice, then fetch again --- cache should be evicted, \texttt{servedFromCache: false} with updated data.
+\end{enumerate}
+
+\subsection*{Commit and Push}
+\begin{enumerate}
+  \item Stage all changes and commit:
+    \begin{verbatim}
+feat: add personalized dashboard with 6-DB integration
+    \end{verbatim}
+    The seeder is idempotent --- if you hit \texttt{/api/seed} again, it returns \texttt{"status": "SKIPPED"} because data already exists.
+  \item Push \texttt{feat/dashboard} to GitHub.
+\end{enumerate}
+
+\section{Integration --- Merging Branches and Resolving Conflicts}
+
+\subsection*{Merge \texttt{feat/dashboard} into \texttt{main}}
+\begin{enumerate}
+  \item Switch to \texttt{main} and merge \texttt{feat/dashboard}. Push to GitHub.
+\end{enumerate}
+
+\subsection*{Merge \texttt{feat/purchase} into \texttt{main}}
+\begin{enumerate}
+  \item Merge \texttt{feat/purchase}. A conflict will occur in \texttt{application.properties}.
+  \item Resolve by keeping:
+    \begin{verbatim}
+app.description=Smart E-Commerce Purchase API
+    \end{verbatim}
+    The seeder is idempotent --- if you hit \texttt{/api/seed} again, it returns \texttt{"status": "SKIPPED"} because data already exists.
+  \item Complete the merge with message:
+    \begin{verbatim}
+Merge branch 'feat/purchase' into main: resolve conflict
+    \end{verbatim}
+    The seeder is idempotent --- if you hit \texttt{/api/seed} again, it returns \texttt{"status": "SKIPPED"} because data already exists.
+  \item Push \texttt{main} to GitHub.
+\end{enumerate}
+
+\section{Advanced Git Workflows}
+
+\subsection*{Feature Branch --- Add a Welcome Endpoint}
+\begin{enumerate}
+  \item From \texttt{main}, create \texttt{feat/welcome}.
+  \item Add environment variables to \texttt{application.properties}:
+    \begin{lstlisting}
+USER_NAME=FirstName_LastName_Local
+ID=55_xxxx
+  \item Create \texttt{WelcomeController} with \texttt{GET /welcome} returning \texttt{'Hello <USER\_NAME> <ID>, from Smart E-Commerce API'}.
+  \item Commit: \texttt{feat: add welcome endpoint}
+\end{enumerate}
+
+\subsection*{Parallel Change on \texttt{main}}
+\begin{enumerate}
+  \item Switch to \texttt{main}, append \texttt{app.version=2.0.0}, commit and push: \texttt{config: bump application version}
+\end{enumerate}
+
+\subsection*{Rebase the Feature Branch}
+\begin{enumerate}
+  \item Rebase \texttt{feat/welcome} on \texttt{main}, resolve conflicts, force-push with lease, merge into \texttt{main}, push.
+\end{enumerate}
+
+\subsection*{Accidentally Commit a Secret and Remove It}
+\begin{enumerate}
+  \item On \texttt{feat/welcome}, add \texttt{api.secret=SUPER-SECRET-KEY}, commit (do not push): \texttt{add secret key}
+  \item Revert, then drop via interactive rebase over last 2 commits. Push with force-with-lease.
+\end{enumerate}
+
+\section{Docker and Docker Compose}
+
+\subsection*{Dockerfile}
+\begin{enumerate}
+  \item Create \texttt{Dockerfile}: base \texttt{eclipse-temurin:25.0.2\_10-jdk}, copy JAR to \texttt{app.jar}, set \texttt{USER\_NAME} and \texttt{ID} env vars, expose port, run JAR.
+  \item Build and run on port 9090.
+\end{enumerate}
+
+\subsection*{Docker Compose}
+\begin{enumerate}
+  \item Add \texttt{app} service to existing \texttt{docker-compose.yaml}: build from Dockerfile, container name as ID\_Container, port mapping second-part-of-ID:8080, env vars with Compose prefix, depends\_on all 6 databases.
+  \item \texttt{docker compose down} then \texttt{docker compose up -d --build}.
+\end{enumerate}
+
+\subsection{Last Required Commit}
+\begin{enumerate}
+  \item Commit Dockerfile and docker-compose:
+    \begin{verbatim}
+feat: add Dockerfile and update docker-compose with app service
+    \end{verbatim}
+    The seeder is idempotent --- if you hit \texttt{/api/seed} again, it returns \texttt{"status": "SKIPPED"} because data already exists.
+  \item Push to origin.
+\end{enumerate}
+
+\section{Running the Automated Grader}
+
+Make sure to run \textit{\textbf{mvn clean install}} and \textit{\textbf{mvn package}} before running the grader.
+
+\subsection*{Pull the Grader Image}
+\begin{verbatim}
+docker pull abuelmagd/task2-grader:latest
+\end{verbatim}
+    The seeder is idempotent --- if you hit \texttt{/api/seed} again, it returns \texttt{"status": "SKIPPED"} because data already exists.
+
+\subsection*{Run the Grader}
+\noindent\textbf{macOS / Linux:}
+\begin{verbatim}
+docker run --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "</absolute/path/to/your/repo>":/repo:ro \
+  -e REPO_PATH=/repo \
+  abuelmagd/task2-grader:latest
+\end{verbatim}
+    The seeder is idempotent --- if you hit \texttt{/api/seed} again, it returns \texttt{"status": "SKIPPED"} because data already exists.
+
+\noindent\textbf{Windows (PowerShell):}
+\begin{verbatim}
+docker run --rm `
+  -v //var/run/docker.sock:/var/run/docker.sock `
+  -v "<C:\Users\you\your-repo>":/repo:ro `
+  -e REPO_PATH=/repo `
+  abuelmagd/task2-grader:latest
+\end{verbatim}
+    The seeder is idempotent --- if you hit \texttt{/api/seed} again, it returns \texttt{"status": "SKIPPED"} because data already exists.
+
+\subsection*{Detailed Documentation}
+\noindent\textbf{\url{JUMPSHARE_LINK_HERE}}
+
+\section*{Submission Requirements}
+A submission link will be provided later. Make sure to make it a private repo and add \texttt{Task-02-Scalable-2026} as a contributor.
+
+\end{document}
