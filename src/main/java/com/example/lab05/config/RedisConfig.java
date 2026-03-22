@@ -12,6 +12,7 @@ import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSeriali
 import org.springframework.data.redis.serializer.RedisSerializationContext;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectMapper.DefaultTyping;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -78,7 +79,8 @@ public class RedisConfig {
             BasicPolymorphicTypeValidator.builder()
                 .allowIfBaseType(Object.class)
                 .build(),
-            DefaultTyping.NON_FINAL
+            DefaultTyping.EVERYTHING,
+            JsonTypeInfo.As.PROPERTY
         );
         return mapper;
     }
