@@ -11,31 +11,10 @@ import org.springframework.stereotype.Repository;
 
 import com.example.lab05.dto.CategoryAvgDTO;
 
-// TODO (Section 2 — MongoDB Aggregation):
-//
-// This is a standalone @Repository class that uses MongoTemplate
-// for queries that go beyond what MongoRepository can auto-generate
-// (e.g., aggregation pipelines).
-//
-// 1. Inject MongoTemplate via constructor injection
-// 2. Implement getAverageByCategory() using an Aggregation pipeline:
-//
-//    Aggregation agg = Aggregation.newAggregation(
-//        Aggregation.match(Criteria.where("rating").gt(4.0)),
-//        Aggregation.group("category").avg("price").as("avgPrice"),
-//        Aggregation.sort(Sort.Direction.DESC, "avgPrice"),
-//        Aggregation.limit(5)
-//    );
-//
-//    AggregationResults<CategoryAvgDTO> results =
-//        mongoTemplate.aggregate(agg, "products", CategoryAvgDTO.class);
-//
-//    return results.getMappedResults();
-
+// Pattern 3: MongoTemplate -- programmatic queries
 @Repository
 public class MongoAggregationRepository {
 
-    // Inject MongoTemplate here
     private final MongoTemplate mongoTemplate;
 
     public MongoAggregationRepository(MongoTemplate mongoTemplate) {
@@ -43,12 +22,14 @@ public class MongoAggregationRepository {
     }
 
     public List<CategoryAvgDTO> getAverageByCategory() {
-        // Implement the aggregation pipeline described above
         Aggregation agg = Aggregation.newAggregation(
             Aggregation.match(Criteria.where("rating").gt(4.0)),
             Aggregation.group("category").avg("price").as("avgPrice"),
             Aggregation.sort(Sort.Direction.DESC, "avgPrice"),
-            Aggregation.limit(5)
+            Aggregation.limit(5),
+            // $group outputs "_id" for the grouped field.
+            // $project renames it back to "category" so it matches the record field name.
+            Aggregation.project("avgPrice").and("_id").as("category")
         );
         AggregationResults<CategoryAvgDTO> results =
             mongoTemplate.aggregate(agg, "products", CategoryAvgDTO.class);

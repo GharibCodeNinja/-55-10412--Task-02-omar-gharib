@@ -41,3 +41,8 @@ spring:
   # ── Elasticsearch ──────────────────────────────────────────
   elasticsearch:
     uris: http://localhost:9200
+
+USER_NAME: Omar_Ghareeb
+ID: 55-10412
+app:
+  description: "Smart E-Commerce Purchase API"

@@ -148,9 +148,33 @@ services:
       elasticsearch:
         condition: service_healthy
 
+  # ── Application ──────────────────────────────────────────────
+  app:
+    build: .
+    container_name: 55-10412_Container
+    ports:
+      - "10412:8080"
+    environment:
+      USER_NAME: Omar_Ghareeb
+      ID: 55-10412
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/lab05db
+      SPRING_DATA_MONGODB_URI: mongodb://root:rootpass@mongo:27017/lab05mongo?authSource=admin
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_NEO4J_URI: bolt://neo4j:7687
+      SPRING_ELASTICSEARCH_URIS: http://elasticsearch:9200
+      SPRING_CASSANDRA_CONTACT-POINTS: cassandra
+    depends_on:
+      - postgres
+      - mongo
+      - redis
+      - cassandra
+      - neo4j
+      - elasticsearch
+  
 volumes:
   pg-data:
   mongo-data:
   cassandra-data:
   neo4j-data:
   es-data:
+
