@@ -44,3 +44,6 @@ spring:
 
 USER_NAME: FirstName_LastName # Replace with your name
 ID: Your_ID # Replace with your ID
+app:
+  version: "1.0.0"
+  description: "Smart E-Commerce Platform"
